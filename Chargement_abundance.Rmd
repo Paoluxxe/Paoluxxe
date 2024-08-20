@@ -1,0 +1,306 @@
+---
+title: "Chargement tsv"
+author: "Paola Fournier"
+date: "2024-07-05"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+library(data.table)
+library(dplyr)
+library(tidyr)
+library(plyr)
+
+# Définir la fonction clean_data
+clean_data <- function(data, symbol) {
+  # Séparation des colonnes rdp_tax_and_bootstrap et blast_taxonomy
+  data <- data %>%
+    separate(col = rdp_tax_and_bootstrap,
+             into = c("rdp_Domain", "rdp_Domain_score",
+                      "rdp_Phylum", "rdp_Phylum_score",
+                      "rdp_Class", "rdp_Class_score",
+                      "rdp_Order", "rdp_Order_score",
+                      "rdp_Family", "rdp_Family_score",
+                      "rdp_Genus", "rdp_Genus_score",
+                      "rdp_Species", "rdp_Species_score"),
+             sep = ';', remove = TRUE, extra = "merge") %>%
+    separate(col = blast_taxonomy,
+             into = c("Domain", "Phylum", "Class",
+                      "Order", "Family", "Genus", "Species"),
+             sep = ';', remove = TRUE, extra = "merge")
+  
+  # Liste des colonnes à nettoyer
+  cols_to_modify <- c("rdp_Domain", "rdp_Domain_score",
+                      "rdp_Phylum", "rdp_Phylum_score",
+                      "rdp_Class", "rdp_Class_score",
+                      "rdp_Order", "rdp_Order_score",
+                      "rdp_Family", "rdp_Family_score",
+                      "rdp_Genus", "rdp_Genus_score",
+                      "rdp_Species", "rdp_Species_score",
+                      "Domain", "Phylum", "Class",
+                      "Order", "Family", "Genus", "Species")
+  
+  # Nettoyage des colonnes
+  data <- data %>%
+    mutate_at(vars(all_of(cols_to_modify)), ~ gsub(".*__|[();]", "", .))
+  
+  # Remplacement des valeurs "no data"
+  data <- data %>%
+    mutate(
+      Phylum = if_else(Domain == "no data", "no data", Phylum),
+      Class = if_else(Domain == "no data", "no data", Class),
+      Order = if_else(Domain == "no data", "no data", Order),
+      Family = if_else(Domain == "no data", "no data", Family),
+      Genus = if_else(Domain == "no data", "no data", Genus),
+      Species = if_else(Domain == "no data", "no data", Species)
+    )
+  
+  # Renommer la colonne observation_name en sequence et ajouter le symbole
+  names(data)[names(data) == "observation_name"] <- "sequence"
+  data$sequence <- paste(symbol, data$sequence, sep = "-")
+  data$sequence <- gsub("Cluster_", "ASV", data$sequence)
+
+  # Ajouter le symbole à la fin des noms de colonnes commençant par "P_20"
+  colnames(data) <- ifelse(grepl("^P_20", colnames(data)), paste0(colnames(data),"_", symbol), colnames(data))
+
+  return(data)
+}
+
+# Fonction pour extraire le symbole du chemin de fichier
+extract_symbol <- function(file_path) {
+  pattern <- ".*VITAE-(.*)_Galaxy.*"
+  symbol <- sub(pattern, "\\1", basename(file_path))
+  return(symbol)
+}
+
+# Liste des fichiers à charger
+file_paths <- list.files("C:/Users/VITAE/Documents/MANIP IFV/v2/data/raw data/", pattern = "abundance.tsv", full.names = TRUE)
+
+# Charger et nettoyer chaque dataset
+datasets <- lapply(file_paths, function(file_path) {
+  data <- fread(file_path)
+  symbol <- extract_symbol(file_path)
+  clean_data(data, symbol)
+})
+
+# Compiler tous les datasets en un seul
+compiled_data <- bind_rows(datasets)
+p_20_cols <- grep("^P_20", names(compiled_data), value = TRUE)
+compiled_data[p_20_cols] <- lapply(compiled_data[p_20_cols], function(x) { replace(x, is.na(x), 0) })
+View(compiled_data)
+```
+
+Creation d'une table d'échantillons
+```{r pressure, echo=FALSE}
+otu <- compiled_data[,grepl("^P_20", names(compiled_data))]
+names(otu)
+rownames(otu) <- compiled_data$sequence
+
+samples <- as.data.frame(colnames(otu))
+names(samples) <- "sample_id"
+
+samples <- tidyr::separate(samples, col=sample_id, into=c("P", "Year", "Marker", "Primers", "Compartment", "Pair", 
+                 "Downy_mildew", "Area", "Replicate", "control_type_WithoutNA", 
+                 "run_no", "plate_no", "plate_row", "plate_col", "extraction_code", "dataset"), sep='_', remove = FALSE, extra = "merge")
+samples <- subset(samples , select = -P)
+rownames(samples) <- samples$sample_id
+samples$Plot <- paste(samples$Pair, samples$Downy_mildew, sep="_")
+
+samples <- as.data.frame(samples %>%
+  mutate(Intra_pair_Geographic_distance = case_when(
+    Pair =="LIB" & control_type_WithoutNA == "sample" ~ "6000",
+    Pair =="ME1" & control_type_WithoutNA == "sample"~ "1000",
+    Pair =="ME2" & control_type_WithoutNA == "sample"~ "500",
+    Pair =="ME3" & control_type_WithoutNA == "sample"~ "600",
+    Pair =="E2M" & control_type_WithoutNA == "sample"~ "7500",
+    Pair =="CDB1" & control_type_WithoutNA == "sample"~ "6700",
+    Pair =="CDB2" & control_type_WithoutNA == "sample"~ "0"),
+    Vine_variety = case_when(
+      Pair =="LIB" & control_type_WithoutNA == "sample"~ "Merlot Noir",
+      Pair =="ME1" & control_type_WithoutNA == "sample"~ "Merlot Noir",
+      Pair =="ME2" & control_type_WithoutNA == "sample"~ "Cabernet Sauvignon",
+      Pair =="ME3" & control_type_WithoutNA == "sample"~ "Merlot Noir",
+      Pair =="E2M" & control_type_WithoutNA == "sample"~ "Merlot Noir",
+      Pair =="CDB1" & control_type_WithoutNA == "sample"~ "Merlot Noir",
+      Pair =="CDB2" & control_type_WithoutNA == "sample"~ "Merlot Noir"),
+    Management = case_when(
+      Pair =="LIB" & control_type_WithoutNA == "sample"~ "Biodynamic",
+      Pair =="ME1" & control_type_WithoutNA == "sample"~ "Organic",
+      Pair =="ME2" & control_type_WithoutNA == "sample"~ "Organic",
+      Pair =="ME3" & control_type_WithoutNA == "sample"~ "Organic",
+      Pair =="E2M" & control_type_WithoutNA == "sample"~ "Conventional",
+      Pair =="CDB1" & control_type_WithoutNA == "sample"~ "Conventional",
+      Pair =="CDB2" & control_type_WithoutNA == "sample"~ "Organic"),
+    GPS = case_when(
+      Plot =="LIB_L" & control_type_WithoutNA == "sample"~ "44.897888_-0.15381",
+      Plot =="LIB_H" & control_type_WithoutNA == "sample"~ "44.88211_-0.08008",
+      Plot =="ME1_L" & control_type_WithoutNA == "sample"~ "45.24741_-0.76678",
+      Plot =="ME1_H" & control_type_WithoutNA == "sample"~ "45.24327_-0.75428",
+      Plot =="ME2_L" & control_type_WithoutNA == "sample"~ "45.24595_-0.76043",
+      Plot =="ME2_H" & control_type_WithoutNA == "sample"~ "45.24285_-0.75606",
+      Plot =="ME3_L" & control_type_WithoutNA == "sample"~ "45.247243_-0.760558",
+      Plot =="ME3_H" & control_type_WithoutNA == "sample"~ "45.249579_-0.753138",
+      Plot =="E2M_L" & control_type_WithoutNA == "sample"~ "44.84542_-0.41896",
+      Plot =="E2M_H" & control_type_WithoutNA == "sample"~ "44.83055_-0.32813",
+      Plot =="CDB1_L" & control_type_WithoutNA == "sample"~ "44.210693_0.372690",
+      Plot =="CDB1_H" & control_type_WithoutNA == "sample"~ "44.240751_0.298044",
+      Plot =="CDB2_L" & control_type_WithoutNA == "sample"~ "44.209269_0.369368",
+      Plot =="CDB2_H" & control_type_WithoutNA == "sample"~ "44.209455_0.370909"),
+    Region = case_when(Pair =="ME1" & control_type_WithoutNA == "sample"~ "ME",
+                       Pair =="ME2" & control_type_WithoutNA == "sample"~ "ME",
+                       Pair =="ME3" & control_type_WithoutNA == "sample"~ "ME",
+                       Pair =="CDB1" & control_type_WithoutNA == "sample"~ "CDB",
+                       Pair =="CDB2" & control_type_WithoutNA == "sample"~ "CDB",
+                       Pair =="LIB" & control_type_WithoutNA == "sample"~ "LIB",
+                       Pair =="E2M" & control_type_WithoutNA == "sample"~ "E2M"),
+    collection_day = case_when(
+      Plot == "LIB_L" & Year == "2022" & control_type_WithoutNA == "sample"~ "19/04/2022",
+      Plot == "LIB_H" & Year == "2022" & control_type_WithoutNA == "sample"~ "19/04/2022",
+      Plot == "ME1_L" & Year == "2022" & control_type_WithoutNA == "sample"~ "21/04/2022", 
+      Plot == "ME1_H" & Year == "2022" & control_type_WithoutNA == "sample"~ "21/04/2022",  
+      Plot == "ME2_L" & Year == "2022" & control_type_WithoutNA == "sample"~ "21/04/2022",
+      Plot == "ME2_H" & Year == "2022" & control_type_WithoutNA == "sample"~ "21/04/2022",
+      Plot == "E2M_H" & Year == "2022" & control_type_WithoutNA == "sample"~ "02/05/2022",
+      Plot == "E2M_L" & Year == "2022" & control_type_WithoutNA == "sample"~ "25/04/2022",
+      Plot == "CDB1_L" & Year == "2022" & control_type_WithoutNA == "sample"~ "27/04/2022", 
+      Plot == "CDB1_H" & Year == "2022" & control_type_WithoutNA == "sample"~ "27/04/2022",
+      
+      Plot == "LIB_L" & Year == "2023" & control_type_WithoutNA == "sample"~ "19/04/2023",
+      Plot == "LIB_H" & Year == "2023" & control_type_WithoutNA == "sample"~ "19/04/2023",
+      Plot == "ME1_L" & Year == "2023" & control_type_WithoutNA == "sample"~ "11/04/2023", 
+      Plot == "ME1_H" & Year == "2023" & control_type_WithoutNA == "sample"~ "11/04/2023",  
+      Plot == "ME2_L" & Year == "2023" & control_type_WithoutNA == "sample"~ "11/04/2023",
+      Plot == "ME2_H" & Year == "2023" & control_type_WithoutNA == "sample"~ "11/04/2023",
+      Plot == "ME3_L" & Year == "2023" & control_type_WithoutNA == "sample"~ "11/04/2023",
+      Plot == "ME3_H" & Year == "2023" & control_type_WithoutNA == "sample"~ "11/04/2023",
+      Plot == "E2M_H" & Year == "2023" & control_type_WithoutNA == "sample"~ "26/04/2023",
+      Plot == "E2M_L" & Year == "2023" & control_type_WithoutNA == "sample"~ "19/04/2023",
+      Plot == "CDB2_L" & Year == "2023" & control_type_WithoutNA == "sample"~ "17/04/2023", 
+      Plot == "CDB2_H" & Year == "2023" & control_type_WithoutNA == "sample"~ "17/04/2023",
+    ),
+    type = case_when(
+      control_type_WithoutNA =="sample" ~ "sample",
+      control_type_WithoutNA != "sample" ~ "control"
+      ),
+    
+    sprayed_previous_year = case_when(
+      (Plot == "CDB1_H" | Pair == "E2M") & (Area == "UC1"|Area =="UC2") & Year == "2022" & control_type_WithoutNA == "sample" ~ "NO",
+      (Plot == "CDB1_H" | Pair == "E2M") & (Area == "CEN"|Area =="EDG") & Year == "2022" & control_type_WithoutNA == "sample"~ "YES",
+      (Pair =="LIB"|Region =="ME")&Area =="UC1" & Year == "2022" & control_type_WithoutNA == "sample"~ "NO",
+      (Pair =="LIB"|Region =="ME")&Area !="UC1" & Year == "2022" & control_type_WithoutNA == "sample"~ "YES",
+       Plot == "CDB1_L" & Year == "2022" & control_type_WithoutNA == "sample"~ "YES",
+      Year == "2023"& control_type_WithoutNA == "sample"~ "YES"),
+    
+      Edge = case_when(
+      (Region =="CDB"|Pair =="E2M")&(Area =="UC1"|Area =="UC2"|Area =="EDG") & Year == "2022" & control_type_WithoutNA == "sample"~ "YES",
+      (Region =="CDB"|Pair =="E2M")& Area =="CEN" & Year == "2022" & control_type_WithoutNA == "sample"~ "NO",
+      
+      (Pair =="LIB"|Region =="ME")&Area =="EDG" & Year == "2022" & control_type_WithoutNA == "sample"~ "YES",
+      (Pair =="LIB"|Region =="ME")&Area !="EDG" & Year == "2022" & control_type_WithoutNA == "sample"~ "NO",
+      Year == "2023"& control_type_WithoutNA == "sample"~ "NO")))
+table(samples$Plot, samples$Year, samples$sprayed_previous_year)  
+
+samples$control_type <- samples$control_typeWithoutNA
+samples$control_type[samples$control_type == "sample"] <- NA
+samples <- separate(samples, col=GPS, into=c("Lat", "Long"), sep='_', remove = TRUE, extra = "merge")
+
+str(samples)
+cols_factor <- c("Compartment", "Marker", "Pair", "Downy_mildew", "Area", "Replicate", "control_type_WithoutNA",
+                 "Region", "Plot", "run_no","Vine_variety", "Management", "Year")
+samples[,cols_factor] <- lapply(samples[,cols_factor], as.factor)
+
+cols_charac <- c("plate_no", "sample_id", "type", "control_type","plate_row")
+samples[,cols_charac] <- lapply(samples[,cols_charac], as.character)
+
+cols_numeric <- c("Intra_pair_Geographic_distance", "Lat", "Long")
+samples[,cols_numeric] <- lapply(samples[,cols_numeric], as.numeric)
+
+samples$plate_col <- as.integer(samples$plate_col)
+rownames(samples) <- samples$sample_id
+str(samples)
+summary(samples$collection_day, samples$Plot)
+
+table(samples$Year, samples$sprayed_previous_year)
+```
+
+Chargement des différents tableaux de données
+```{r setup, include=FALSE}
+## Chargement des données physico-chimiques du sol
+df_sol <- read.csv("C:/Users/VITAE/Documents/MANIP IFV/v2/doc/metadata/SoilPhysicalChemistry_IFV22-23.csv", sep=";", header = T)
+# je remplace les valeur <1 par des 0
+df_sol[df_sol =="<1"] <-0
+
+## Chargement des données ddPCR
+df_ddPCR23 <- read.csv("C:/Users/VITAE/Documents/MANIP IFV/v2/doc/metadata/ddPCRPlasmopara_2023.csv", sep=";", header = T)
+df_ddPCR22 <- read.csv("C:/Users/VITAE/Documents/MANIP IFV/v2/doc/metadata/ddPCRPlasmopara_2022.csv", sep=";", header = T)
+
+# je remplace les valeur <1 par des 0
+df_ddPCR23[df_ddPCR23$Concentration =="No Call","Concentration"] <-0
+df_ddPCR23[is.na(df_ddPCR23)] <- 0
+
+df_ddPCR22[df_ddPCR22$Concentration =="No Call","Concentration"] <-0
+df_ddPCR22[is.na(df_ddPCR22)] <- 0
+```
+
+On rajoute aux metadonnées, les infos sur la physico-chimie du sol
+```{r setup, include=FALSE}
+## creer une colonne commune
+samples$Sample_by_Area <- paste(samples$Pair, samples$Downy_mildew, samples$Area, sep = "_") 
+
+samples <- join(samples, df_sol, type = "left") ## on join le sample_data et le data_sol par le nom de colonne "Sample"
+rownames(samples) <- samples$sample_id
+dim(samples)
+```
+
+On rajoute aux metadonnées, les infos sur la ddPCR
+```{r setup, include=FALSE}
+## creer une colonne commune
+samples$Sample <- paste(samples$Sample_by_Area, samples$Replicate, sep = "_") 
+library(plyr)
+### données 2022
+samples_22 <- samples[samples$Year == "2022",]
+samples_22_soil <- samples_22[samples_22$Compartment == "SOIL",]
+samples_22_soil_sub <- subset(samples_22_soil, select = c(extraction_code, Sample))
+df_ddPCR22_v1 <- join(samples_22_soil_sub, df_ddPCR22, type = "left")
+df_ddPCR22_v2 <- subset(df_ddPCR22_v1, select = - extraction_code)
+library(plyr)
+samples_22 <- join(samples_22, df_ddPCR22_v2, type = "left") ## on join le sample_data et le data_sol par le nom de colonne "Sample"
+samples_22 <- subset(samples_22, select = - Well)
+### données 2023
+samples_23 <- samples[samples$Year == "2023",]
+library(plyr)
+samples_23 <- join(samples_23, df_ddPCR23, type = "left") ## on join le sample_data et le data_sol par le nom de colonne "Sample"
+dim(samples_23)
+
+
+samples <- rbind(samples_22, samples_23)
+samples <- unique(samples)
+rownames(samples) <- samples$sample_id
+dim(samples)
+View(samples)
+```
+
+Création d'une table de taxinomie
+```{r setup, include=FALSE}
+tax<- compiled_data[,!grepl("^P_20", names(compiled_data)) & names(compiled_data) != "seed_id"]
+rownames(tax) <- tax$sequence
+```
+
+
+```{r setup, include=FALSE}
+library(phyloseq)
+ps <- phyloseq(otu_table(as.matrix(otu), taxa_are_rows=TRUE), 
+               sample_data(samples), tax_table(as.matrix(tax)))
+unique(samples$dataset)
+ps.its.euk <- subset_samples(ps, dataset == "ITS1catta_euk"|dataset == "ITS1F_euk")
+ps.its.fun <- subset_samples(ps, dataset == "ITS1F_fun")
+ps.16s.fun <- subset_samples(ps, dataset == "799f_bac")
+```
+
+Création d'un objet phyloseq
+```{r setup, include=FALSE}
+library(phyloseq)
+saveRDS(ps.its.euk, "C:/Users/VITAE/Documents/MANIP IFV/v2/output/phyloseq/ps1_its_euk.rds")
+saveRDS(ps.its.fun, "C:/Users/VITAE/Documents/MANIP IFV/v2/output/phyloseq/ps1_its_fun.rds")
+saveRDS(ps.16s.fun, "C:/Users/VITAE/Documents/MANIP IFV/v2/output/phyloseq/ps1_16s_bac.rds")
+```
